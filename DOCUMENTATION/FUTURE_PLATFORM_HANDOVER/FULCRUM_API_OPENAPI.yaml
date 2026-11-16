@@ -1,0 +1,709 @@
+openapi: 3.1.0
+info:
+  title: FULCRUM-INDIA Institutional Platform API (Proposed Target Contract)
+  version: 2.0.0
+  summary: Proposed stateless REST API wrapping FULCRUM-INDIA Beta 2.0.0 Python domain services for React Web and Flutter Android/iOS clients.
+  description: |
+    **IMPORTANT STATUS NOTICE**: This OpenAPI 3.1 specification defines the **proposed target REST API** (`/api/v1/*`) for future web (React + TypeScript) and mobile (Flutter Android/iOS) clients.
+    Every endpoint maps directly to an existing, verified Python function in `services/*.py` at repository commit `235767754f8d8bb4605e819593bb3f370ddeab27`.
+    - Direct browser/mobile access to `SUPABASE_SECRET_KEY` (`service_role`) is strictly prohibited.
+    - All authenticated endpoints require `Authorization: Bearer <supabase_jwt>` and evaluate the 4 sequential gates (Account Lifecycle -> First-Login Temp Password -> Terms v1.0.0 -> Role NDA v1.0.0).
+servers:
+  - url: https://app.fulcrumindia.online/api/v1
+    description: Proposed Production API Gateway (Behind Caddy 2 Reverse Proxy)
+  - url: http://localhost:8000/api/v1
+    description: Local Development FastAPI Server
+
+security:
+  - SupabaseBearerJWT: []
+
+tags:
+  - name: Auth & Onboarding
+    description: Public Aspirant registration, confirmation resend, password recovery, and first-login password rotation.
+  - name: Session & Bootstrap
+    description: Gate evaluation, active workspace switching, and multi-role grant discovery.
+  - name: Legal & NDA
+    description: Versioned Terms of Service (`terms_v1_0`) and Role NDA (`nda_guide`, `nda_sme`) execution.
+  - name: Profiles & Media
+    description: 4-part Aspirant profiles, Mentor profiles, and private WebP photo vaults (`300s` signed URLs).
+  - name: Journeys & Dossier PDF
+    description: Chronological Enterprise Journey milestones, optimistic-locked edits, revisions, and PDF dossier export.
+  - name: Schemes & Matching
+    description: 179-scheme deterministic matching engine, Guide scheme releases, 7-stage tracker, and Admin SSR overrides.
+  - name: Consultations & Collaboration
+    description: Bidirectional consultation threads, mentor-to-admin inquiries, and shared/private case notes.
+  - name: Governance & Lifecycle
+    description: Confidential Guide complaints, SME COI declarations, 7/10/14-day inactivity monitor, and account archival.
+  - name: Sole Administrator (ADM-01..13)
+    description: Exclusive endpoints for the Sole Institutional Administrator (`<SOLE_ADMIN_EMAIL>`).
+
+components:
+  securitySchemes:
+    SupabaseBearerJWT:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase GoTrue access token (`sb_access_token`).
+
+  parameters:
+    ActiveWorkspaceHeader:
+      name: X-Fulcrum-Active-Workspace
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: [aspirant, guide, sme, admin]
+      description: Active workspace selected by the user; verified against `public.user_roles`.
+    AspirantIdPath:
+      name: aspirant_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [ok, error]
+      properties:
+        ok:
+          type: boolean
+          const: false
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: NDA_ACCEPTANCE_REQUIRED
+            message:
+              type: string
+            gate_required:
+              type: [string, "null"]
+            details:
+              type: object
+        request_id:
+          type: string
+
+    SignupAspirantRequest:
+      type: object
+      required: [full_name, email, district, password]
+      properties:
+        full_name:
+          type: string
+          minLength: 2
+          example: Ravi Kumar
+        email:
+          type: string
+          format: email
+          example: ravi.kumar@example.in
+        phone:
+          type: string
+          example: "9876543210"
+        district:
+          type: string
+          example: Madurai
+        password:
+          type: string
+          minLength: 8
+          description: Standardized to >= 8 characters across all surfaces (resolving DEF-003).
+
+    BootstrapResponse:
+      type: object
+      required: [ok, data]
+      properties:
+        ok:
+          type: boolean
+          const: true
+        data:
+          type: object
+          required: [user, account_lifecycle, gates, roles, notifications]
+          properties:
+            user:
+              type: object
+              properties:
+                id: { type: string, format: uuid }
+                email: { type: string, format: email }
+                full_name: { type: string }
+                district: { type: string }
+            account_lifecycle:
+              type: object
+              properties:
+                account_status:
+                  type: string
+                  enum: [ACTIVE, TEMPORARILY_SUSPENDED, ARCHIVED, PENDING_DELETION, DENIED]
+                is_active: { type: boolean }
+                legal_hold: { type: boolean }
+                deletion_scheduled_for: { type: [string, "null"], format: date-time }
+                lifecycle_reason: { type: [string, "null"] }
+            gates:
+              type: object
+              properties:
+                password_change_required: { type: boolean }
+                terms_acceptance_required: { type: boolean }
+                nda_acceptance_required:
+                  type: object
+                  properties:
+                    guide: { type: boolean }
+                    sme: { type: boolean }
+            roles:
+              type: object
+              properties:
+                is_sole_admin: { type: boolean }
+                active_workspace:
+                  type: string
+                  enum: [aspirant, guide, sme, admin]
+                available_workspaces:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      role: { type: string, enum: [aspirant, guide, sme, admin] }
+                      label: { type: string }
+                      status: { type: string, enum: [active, pending_nda] }
+                      nda_signed: { type: boolean }
+            notifications:
+              type: object
+              properties:
+                unread_workspace_count: { type: integer }
+                unread_total_count: { type: integer }
+
+    LegalAcceptanceRequest:
+      type: object
+      required: [doc_type, checkbox_confirmed]
+      properties:
+        doc_type:
+          type: string
+          enum: [terms_and_conditions, nda_guide, nda_sme]
+        checkbox_confirmed:
+          type: boolean
+        typed_name:
+          type: string
+          description: Required for nda_guide and nda_sme (>= 2 chars).
+        typed_phrase:
+          type: string
+          description: Required for nda_guide and nda_sme (must match 'I AGREE' case-insensitively).
+
+    AspirantProfileUpdateRequest:
+      type: object
+      required: [full_name, district, state, personal_data, professional_data, business_data, demographics_data, assistance_need_data]
+      properties:
+        full_name: { type: string }
+        phone: { type: string }
+        district: { type: string }
+        state: { type: string, default: "Tamil Nadu" }
+        personal_data: { type: object }
+        professional_data: { type: object }
+        business_data: { type: object }
+        demographics_data:
+          type: object
+          properties:
+            social_category: { type: string }
+            is_women_led: { type: boolean }
+            women_equity_pct: { type: number, minimum: 0, maximum: 100 }
+            is_dpiit_recognized: { type: boolean }
+            is_startuptn_registered: { type: boolean }
+            is_udyam_registered: { type: boolean }
+            is_gst_registered: { type: boolean }
+            is_fssai_registered: { type: boolean }
+            is_drug_license: { type: boolean }
+        assistance_need_data:
+          type: object
+          properties:
+            goal: { type: string }
+            support_type: { type: string }
+            quantum_range: { type: string }
+            timeframe: { type: string }
+
+    JourneyEventCreateRequest:
+      type: object
+      required: [title, description, event_date]
+      properties:
+        title: { type: string, minLength: 2 }
+        description: { type: string, minLength: 2 }
+        category_or_topic: { type: string }
+        event_date: { type: string, format: date }
+
+    JourneyEventUpdateRequest:
+      type: object
+      required: [title, description, event_date, change_reason, expected_updated_at]
+      properties:
+        title: { type: string }
+        description: { type: string }
+        event_date: { type: string, format: date }
+        included_in_roadmap: { type: boolean }
+        change_reason: { type: string, minLength: 3 }
+        expected_updated_at: { type: string, format: date-time }
+
+    SchemeReleaseRequest:
+      type: object
+      required: [scheme_id, guide_recommendation, guide_note]
+      properties:
+        scheme_id: { type: string }
+        guide_recommendation:
+          type: string
+          enum: [HIGH_PRIORITY, RECOMMENDED, EXPLORATORY]
+        guide_note: { type: string, minLength: 5 }
+
+    SchemeStageUpdateRequest:
+      type: object
+      required: [application_stage]
+      properties:
+        application_stage:
+          type: string
+          enum:
+            - Recommended
+            - Preparing Application
+            - Application Submitted
+            - Under Government Review
+            - Clarification Requested
+            - Approved / Sanctioned
+            - Rejected / Closed
+        stage_note: { type: string }
+
+    ConsultationCreateRequest:
+      type: object
+      required: [subject, message, target_role]
+      properties:
+        subject: { type: string, minLength: 3 }
+        message: { type: string, minLength: 5 }
+        priority: { type: string, enum: [LOW, MEDIUM, HIGH, URGENT], default: MEDIUM }
+        category: { type: string, default: GENERAL }
+        category_detail: { type: string }
+        target_role: { type: string, enum: [guide, sme] }
+        target_mentor_id: { type: [string, "null"], format: uuid }
+
+    ConsultationReplyRequest:
+      type: object
+      required: [response]
+      properties:
+        response: { type: string, minLength: 2 }
+        new_status:
+          type: string
+          enum:
+            - OPEN
+            - IN_PROGRESS
+            - WAITING_ON_ASPIRANT
+            - WAITING_ON_GUIDE_SME
+            - RESOLVED
+            - ESCALATED
+            - DIRECTIVE_ISSUED
+
+    AccountLifecycleActionRequest:
+      type: object
+      required: [action, reason]
+      properties:
+        action:
+          type: string
+          enum: [SUSPEND, RESUME, ARCHIVE, RESTORE, REQUEST_DELETION, CANCEL_DELETION, APPLY_LEGAL_HOLD, RELEASE_LEGAL_HOLD]
+        reason:
+          type: string
+          minLength: 5
+
+paths:
+  /auth/signup-aspirant:
+    post:
+      tags: [Auth & Onboarding]
+      summary: Register a new Aspirant account and pre-seed profile metadata (FR-AUTH-001)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SignupAspirantRequest"
+      responses:
+        "201":
+          description: Account created; returns pending_confirmation status and Spam-folder guidance flag.
+        "409":
+          description: Account with email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /auth/resend-confirmation:
+    post:
+      tags: [Auth & Onboarding]
+      summary: Resend signup confirmation email via Supabase Auth & Resend SMTP (PROP-01 / DEF-002)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Confirmation email re-dispatched if account is unconfirmed.
+        "429":
+          description: Rate limit exceeded.
+
+  /auth/password-reset/request:
+    post:
+      tags: [Auth & Onboarding]
+      summary: Request a single-use password recovery email (Blocked for Sole Admin, FR-AUTH-003)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Recovery email sent via ephemeral Supabase client.
+        "403":
+          description: Blocked for Sole Administrator email.
+
+  /auth/first-login-password:
+    post:
+      tags: [Auth & Onboarding]
+      summary: Rotate provisional mentor password on first login (FR-AUTH-004 / Gate 1)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_password]
+              properties:
+                new_password: { type: string, minLength: 8 }
+      responses:
+        "200":
+          description: Permanent password set and temp_password_issued cleared.
+
+  /me/bootstrap:
+    get:
+      tags: [Session & Bootstrap]
+      summary: Evaluate Gates 0-3, active roles, available workspaces, and unread notification counts
+      parameters:
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Bootstrap payload for initializing React or Flutter shell.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BootstrapResponse"
+        "401":
+          description: Invalid or expired JWT.
+
+  /legal/acceptances:
+    post:
+      tags: [Legal & NDA]
+      summary: Record Terms of Service or Role NDA acceptance and activate pending role (FR-LEGAL-001)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LegalAcceptanceRequest"
+      responses:
+        "201":
+          description: Legal acceptance recorded with SHA-256 hash; role activated if NDA.
+
+  /profiles/aspirants/{aspirant_id}:
+    get:
+      tags: [Profiles & Media]
+      summary: Get 4-part Aspirant profile and assigned mentorship team (FR-ASP-001)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Authorized Aspirant dossier.
+        "403":
+          description: Caller is neither owner, assigned active mentor with NDA, nor Sole Admin.
+    put:
+      tags: [Profiles & Media]
+      summary: Update 4-part Aspirant profile and Assistance Need Y while preserving hybrid mentor data (FR-ASP-001)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AspirantProfileUpdateRequest"
+      responses:
+        "200":
+          description: Profile updated and completion percentage recalculated.
+
+  /media/aspirant-photo/{aspirant_id}:
+    get:
+      tags: [Profiles & Media]
+      summary: Generate 300-second signed URL for private Aspirant photo (FR-ASP-002 / SEC-STOR-002)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Signed URL (300s TTL) if authorized; null if no photo uploaded.
+        "403":
+          description: Unauthorized viewer (unassigned or NDA unsigned).
+    post:
+      tags: [Profiles & Media]
+      summary: Upload, strip EXIF, and compress Aspirant photo to <=180KB 600x600 WebP (FR-ASP-002)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "201":
+          description: Photo validated, re-encoded to WebP, and stored in aspirant-profile-photos.
+    delete:
+      tags: [Profiles & Media]
+      summary: Delete private Aspirant photograph from storage and metadata table
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+      responses:
+        "200":
+          description: Photo deleted.
+
+  /journeys/{aspirant_id}:
+    get:
+      tags: [Journeys & Dossier PDF]
+      summary: Fetch chronological Enterprise Journey timeline and edit revision history (FR-JRN-001)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Chronologically sorted events and revision snapshots.
+
+  /journeys/{aspirant_id}/events:
+    post:
+      tags: [Journeys & Dossier PDF]
+      summary: Add an Aspirant milestone, Guide contribution, SME contribution, or Admin entry (FR-JRN-001)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JourneyEventCreateRequest"
+      responses:
+        "201":
+          description: Event created and attributed to caller role.
+
+  /journeys/events/{event_id}:
+    patch:
+      tags: [Journeys & Dossier PDF]
+      summary: Edit a Journey event with optimistic concurrency check and revision snapshot (FR-JRN-001)
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/JourneyEventUpdateRequest"
+      responses:
+        "200":
+          description: Revision snapshot written to journey_event_revisions and event updated.
+        "403":
+          description: Caller is not the original event author or Sole Admin.
+        "409":
+          description: Optimistic concurrency conflict (expected_updated_at mismatch).
+
+  /reports/aspirants/{aspirant_id}/dossier-pdf:
+    get:
+      tags: [Journeys & Dossier PDF]
+      summary: Generate and download print-ready Executive Business Dossier PDF (FR-ASP-003)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Binary PDF stream (%PDF-1.4).
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+
+  /schemes/match/{aspirant_id}:
+    post:
+      tags: [Schemes & Matching]
+      summary: Run 3-stage deterministic matching across 179 schemes (Guide & Admin only, FR-SCH-001)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: Eligible and disqualified scheme matches with 0-100 scores and evidence checklists.
+        "403":
+          description: Raw matching is restricted to assigned Guide and Sole Admin.
+
+  /schemes/releases/{aspirant_id}:
+    get:
+      tags: [Schemes & Matching]
+      summary: List Guide-released schemes for an Aspirant (FR-GUIDE-002 / SCR-12)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+      responses:
+        "200":
+          description: Released schemes with Guide advisory notes and 7-stage application status.
+    post:
+      tags: [Schemes & Matching]
+      summary: Formally release an eligible scheme to an Aspirant (Guide & Admin only, FR-GUIDE-002)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchemeReleaseRequest"
+      responses:
+        "201":
+          description: Scheme released and Aspirant notified.
+
+  /schemes/releases/{aspirant_id}/{scheme_id}:
+    patch:
+      tags: [Schemes & Matching]
+      summary: Update post-release application stage or withdraw scheme release (FR-GUIDE-002)
+      parameters:
+        - $ref: "#/components/parameters/AspirantIdPath"
+        - name: scheme_id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SchemeStageUpdateRequest"
+      responses:
+        "200":
+          description: Application stage updated.
+
+  /consultations:
+    get:
+      tags: [Consultations & Collaboration]
+      summary: List consultation tickets scoped to caller's active workspace and assignments (FR-CONS-001)
+      parameters:
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      responses:
+        "200":
+          description: List of consultation threads.
+    post:
+      tags: [Consultations & Collaboration]
+      summary: Create a new Aspirant consultation or Mentor-initiated consultation (FR-CONS-001)
+      parameters:
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsultationCreateRequest"
+      responses:
+        "201":
+          description: Consultation ticket created.
+        "403":
+          description: Blocked if account is in PENDING_DELETION (VULN-07).
+
+  /consultations/{request_id}/reply:
+    post:
+      tags: [Consultations & Collaboration]
+      summary: Append a threaded reply and update actor attribution & SLA timestamps (FR-CONS-001)
+      parameters:
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: "#/components/parameters/ActiveWorkspaceHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConsultationReplyRequest"
+      responses:
+        "200":
+          description: Reply recorded; mentor SLA clock updated only if actor is assigned Guide/SME.
+        "403":
+          description: Blocked if SME has active COI lock (SME_COI_LOCKED) or workspace mismatch.
+
+  /governance/complaints:
+    post:
+      tags: [Governance & Lifecycle]
+      summary: Submit a Confidential Guide Complaint visible only to Aspirant and Sole Admin (FR-CMP-001)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason, details]
+              properties:
+                reason: { type: string }
+                details: { type: string, minLength: 15 }
+      responses:
+        "201":
+          description: Complaint logged in public.guide_complaints and Sole Admin notified.
+
+  /governance/sme-conflicts:
+    post:
+      tags: [Governance & Lifecycle]
+      summary: Declare or clear an SME Conflict of Interest for an assigned Aspirant (FR-CMP-001)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [aspirant_id, has_conflict]
+              properties:
+                aspirant_id: { type: string, format: uuid }
+                has_conflict: { type: boolean }
+                conflict_details: { type: string }
+      responses:
+        "200":
+          description: COI declaration saved; SME consultation replies locked if has_conflict=true.
+
+  /admin/accounts/{user_id}/lifecycle:
+    post:
+      tags: [Sole Administrator (ADM-01..13)]
+      summary: Execute Sole Admin account lifecycle transition with atomic handover & immutable audit log (FR-ADMIN-013)
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AccountLifecycleActionRequest"
+      responses:
+        "200":
+          description: Lifecycle transition completed and logged to append-only public.account_lifecycle_log.
+        "403":
+          description: Caller is not Sole Admin or target is Root Sole Admin (ROOT_ADMIN_IMMUNE).
+        "409":
+          description: Blocked by active Legal Hold (LEGAL_HOLD_ACTIVE) or handover failure rolled back.
